@@ -29,11 +29,26 @@ jobs:
 
       - name: Generate dynamic changelog
         run: |
-          mkdir -p debian  # Ensure the debian directory exists
-          sed -e "s/{{VERSION}}/${{ steps.version.outputs.DEB_VERSION }}/g" \
-              -e "s/{{TAG}}/$GITHUB_REF_NAME/g" \
-              debian/changelog.in > debian/changelog
-          cat debian/changelog  # Debugging: Print the generated changelog
+          VERSION=${{ github.ref_name#v }}  # Rimuove il prefisso "v" dal tag
+          DISTRIBUTION=$DISTRO  # Dalla variabile impostata in "Parse distribution"
+
+          # Configura dch per generare il changelog
+          dch --create \
+              --package magicfw \
+              --newversion "$VERSION" \
+              --distribution "$DISTRIBUTION" \
+              "Automatic release from Git tag ${GITHUB_REF_NAME}"
+
+          # Debug: Mostra il contenuto del changelog generato
+          cat debian/changelog
+
+#      - name: Generate dynamic changelog
+#        run: |
+#          mkdir -p debian  # Ensure the debian directory exists
+#          sed -e "s/{{VERSION}}/${{ steps.version.outputs.DEB_VERSION }}/g" \
+#              -e "s/{{TAG}}/$GITHUB_REF_NAME/g" \
+#              debian/changelog.in > debian/changelog
+#          cat debian/changelog  # Debugging: Print the generated changelog
 
       - name: Build Debian Package
         run: |
