@@ -1,0 +1,31 @@
+[Unit]
+Description=Docker Magic Firewall
+After=docker.service network-online.target firewalld.service
+Requires=docker.service
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=exec
+Restart=on-failure
+RestartSec=5s
+ExecStart=/usr/bin/python3 /opt/docker_magicfw.py
+
+# Environment variables (customize as needed)
+Environment=LOG_LEVEL=INFO
+Environment=ENABLE_IPV4=true
+Environment=ENABLE_IPV6=true
+Environment=DISABLE_NAT=true
+
+# Security hardening
+User=root
+Group=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
