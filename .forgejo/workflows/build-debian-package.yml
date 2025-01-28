@@ -25,7 +25,7 @@ jobs:
       - name: Setup Debian Packaging
         run: |
           sudo apt-get update
-          sudo apt-get install -y devscripts debhelper dh-python dh-systemd build-essential
+          sudo apt-get install -y devscripts debhelper dh-python dpkg-dev jq build-essential
 
       - name: Build Debian Package
         run: |
