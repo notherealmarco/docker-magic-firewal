@@ -9,10 +9,22 @@ jobs:
   build-package:
     runs-on: docker
     container:
-      image: catthehacker/ubuntu:act-latest
+      image: debian:bookworm
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
+      - name: Setup Debian Packaging
+        run: |
+          apt-get update
+          apt-get install -y \
+            devscripts \
+            debhelper \
+            dh-python \
+            python3-all \
+            build-essential \
+            git \
+            curl
 
       - name: Parse distribution
         run: |
