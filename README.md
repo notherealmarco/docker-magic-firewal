@@ -100,14 +100,3 @@ In the above example:
 ## Contribution
 
 Your contributions are welcome! Feel free to open issues or submit pull requests on GitHub to improve the functionality or features of this project.
-
----
-
-## Author & License
-
-- **Author:** [Your Name or Organization Name]
-- **License:** MIT License
-
-Feel free to modify and use this project. See the `LICENSE` file for details.
-
----
