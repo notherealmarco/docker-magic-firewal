@@ -1,4 +1,4 @@
-# Docker Magic Firewall Service
+# Docker Magic Firewall
 
 ## Project Overview
 
