@@ -37,6 +37,8 @@ jobs:
               --package magicfw \
               --newversion "$VERSION" \
               --distribution "$DISTRIBUTION" \
+              --force-bad-version \
+              --changelog debian/changelog \
               "Automatic release from Git tag ${GITHUB_REF_NAME}"
 
           # Debug: Mostra il contenuto del changelog generato
