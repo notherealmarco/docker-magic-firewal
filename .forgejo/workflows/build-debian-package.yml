@@ -1,0 +1,44 @@
+name: Build and Deploy Debian Package
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  build-package:
+    runs-on: docker
+    container:
+      image: catthehacker/ubuntu:act-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Parse distribution
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *"@stable"* ]]; then
+            echo "DISTRO=stable" >> $GITHUB_ENV
+          else
+            echo "DISTRO=unstable" >> $GITHUB_ENV
+          fi
+
+      - name: Setup Debian Packaging
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y devscripts debhelper dh-python dh-systemd build-essential
+
+      - name: Build Debian Package
+        run: |
+          debuild -us -uc -b
+
+      - name: Upload to Forgejo Debian Registry
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          PACKAGE_NAME="magicfw_0.1.0-1_all.deb"  # Update version accordingly
+          DISTRO="debian"  # e.g., bullseye, bookworm
+          COMPONENT="main"
+
+          curl --user "your_username:$FORGEJO_TOKEN" \
+               --upload-file ../${PACKAGE_NAME} \
+               "https://git.marcorealacci.me/api/packages/${{ github.repository_owner }}/debian/pool/${DISTRO}/${COMPONENT}/${PACKAGE_NAME}"

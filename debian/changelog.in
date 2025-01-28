@@ -1,0 +1,5 @@
+magicfw ({{VERSION}}) unstable; urgency=medium
+
+  * Automatic release from Git tag {{TAG}}
+
+ -- Auto Release Bot <ci@forgejo>  $(date -R)
