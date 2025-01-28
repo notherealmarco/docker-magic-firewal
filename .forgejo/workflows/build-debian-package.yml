@@ -27,6 +27,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y devscripts debhelper dh-python dpkg-dev jq build-essential
 
+      - name: Generate dynamic changelog
+        run: |
+          mkdir -p debian  # Ensure the debian directory exists
+          sed -e "s/{{VERSION}}/${{ steps.version.outputs.DEB_VERSION }}/g" \
+              -e "s/{{TAG}}/$GITHUB_REF_NAME/g" \
+              debian/changelog.in > debian/changelog
+          cat debian/changelog  # Debugging: Print the generated changelog
+
       - name: Build Debian Package
         run: |
           debuild -us -uc -b
