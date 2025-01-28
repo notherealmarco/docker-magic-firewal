@@ -29,8 +29,8 @@ jobs:
 
       - name: Generate dynamic changelog
         run: |
-          VERSION=${{ github.ref_name#v }}  # Rimuove il prefisso "v" dal tag
-          DISTRIBUTION=$DISTRO  # Dalla variabile impostata in "Parse distribution"
+          VERSION=${{ steps.version.outputs.DEB_VERSION }}
+          DISTRIBUTION=$DISTRO
 
           # Configura dch per generare il changelog
           dch --create \
