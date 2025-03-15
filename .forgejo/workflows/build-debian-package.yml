@@ -1,13 +1,17 @@
 name: Build and Publish Debian Package
 
+
 on:
   push:
-    branches:
-      - main
-      - test
-  pull_request:
-    branches:
-      - main
+    tags:
+      - '*'
+# on:
+#   push:
+#     branches:
+#       - main
+#   pull_request:
+#     branches:
+#       - main
 
 jobs:
   build:
