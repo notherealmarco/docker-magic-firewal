@@ -1,4 +1,4 @@
-# Docker Magic Firewall Service: README.md
+# Docker Magic Firewall Service
 
 ## Project Overview
 
