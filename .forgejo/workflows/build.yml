@@ -50,7 +50,7 @@ jobs:
 
       - name: Generate version number
         run: |
-          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.1.$(git rev-list --count HEAD)")
+          VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
       - name: Build Debian package with FPM
