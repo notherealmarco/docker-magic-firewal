@@ -68,7 +68,7 @@ jobs:
         env:
           FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
         run: |
-          PACKAGE_NAME="@magicfw_${VERSION}_amd64.deb"  # Update version accordingly
+          PACKAGE_NAME="magicfw_${VERSION}_amd64.deb"  # Update version accordingly
 
           curl --user "your_username:$FORGEJO_TOKEN" \
                --upload-file ../${PACKAGE_NAME} \
