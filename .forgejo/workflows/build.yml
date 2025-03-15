@@ -11,6 +11,10 @@ on:
     branches:
       - main
 
+env:
+  DISTRIBUTION: bookworm
+  COMPONENT: main
+
 jobs:
   build:
     runs-on: docker
@@ -48,21 +52,24 @@ jobs:
           # Copy the systemd service file
           cp systemd/magicfw.service package/etc/systemd/system/
 
+      - name: Generate version number
+        run: |
+          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.1.$(git rev-list --count HEAD)")
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
       - name: Build Debian package with FPM
         run: |
           # The -s dir option tells FPM the source is a directory.
           # The -t deb option builds a deb package.
           # -n is the package name and -v the version.
-          fpm -s dir -t deb -n magicfw -v 1.0.0 -C package .
+          fpm -s dir -t deb -n magicfw -v $VERSION -C package .
 
-      # - name: Upload to Forgejo Debian Registry
-      #   env:
-      #     FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
-      #   run: |
-      #     PACKAGE_NAME="@magicfw_1.0.0_amd64.deb"  # Update version accordingly
-      #     DISTRO="debian"  # e.g., bullseye, bookworm
-      #     COMPONENT="main"
+      - name: Upload to Forgejo Debian Registry
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          PACKAGE_NAME="@magicfw_${VERSION}_amd64.deb"  # Update version accordingly
 
-      #     curl --user "your_username:$FORGEJO_TOKEN" \
-      #          --upload-file ../${PACKAGE_NAME} \
-      #          "https://git.marcorealacci.me/api/packages/${{ github.repository_owner }}/debian/pool/${DISTRO}/${COMPONENT}/${PACKAGE_NAME}"
+          curl --user "your_username:$FORGEJO_TOKEN" \
+               --upload-file ../${PACKAGE_NAME} \
+               "https://git.marcorealacci.me/api/packages/${{ github.repository_owner }}/debian/pool/${{env.DISTRIBUTION}}/${{env.COMPONENT}}/upload"
