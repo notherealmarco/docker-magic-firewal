@@ -4,12 +4,8 @@ name: Build and Publish Debian Package
 
 on:
   push:
-    branches:
-      - main
-      - test
-  pull_request:
-    branches:
-      - main
+    tags:
+      - "v*"
 
 env:
   DISTRIBUTION: bookworm
