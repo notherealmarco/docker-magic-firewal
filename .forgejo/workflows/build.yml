@@ -62,13 +62,13 @@ jobs:
           # The -s dir option tells FPM the source is a directory.
           # The -t deb option builds a deb package.
           # -n is the package name and -v the version.
-          fpm -s dir -t deb -n magicfw -v $VERSION -C package .
+          fpm -s dir -t deb -n magicfw-docker -v $VERSION -C package .
 
       - name: Upload to Forgejo Debian Registry
         env:
           FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
         run: |
-          PACKAGE_NAME="magicfw_${VERSION}_amd64.deb"  # Update version accordingly
+          PACKAGE_NAME="magicfw-docker_${VERSION}_amd64.deb"  # Update version accordingly
 
           curl --user "your_username:$FORGEJO_TOKEN" \
                --upload-file ./${PACKAGE_NAME} \

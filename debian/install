@@ -1,2 +1,0 @@
-src/main.py usr/bin/
-systemd/magicfw.service lib/systemd/system/
