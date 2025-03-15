@@ -10,7 +10,7 @@ StartLimitBurst=10
 Type=exec
 Restart=on-failure
 RestartSec=5s
-ExecStart=/usr/bin/python3 /opt/docker_magicfw.py
+ExecStart=/usr/local/bin/magicfw
 
 # Environment variables (customize as needed)
 Environment=LOG_LEVEL=INFO

@@ -46,8 +46,8 @@ jobs:
           # Create temporary packaging directory
           mkdir -p package/usr/local/bin
           mkdir -p package/etc/systemd/system
-          # Copy main.py as the executable and rename if needed
-          cp src/main.py package/usr/local/bin/magicfw
+          # Copy magicfw.py as the executable and rename if needed
+          cp src/magicfw.py package/usr/local/bin/magicfw
           chmod +x package/usr/local/bin/magicfw
           # Copy the systemd service file
           cp systemd/magicfw.service package/etc/systemd/system/
