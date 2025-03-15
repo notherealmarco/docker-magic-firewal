@@ -20,11 +20,11 @@ You can define rules per container using specific Docker labels:
 | **Label Key**                          | **Description**                                                                                                                               | **Default** |
 |----------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|-------------|
 | `magicfw.firewall.allow_icc`           | Enables communication between the container and other containers on different Docker networks (not normally possible in Docker environments). | `false`     |
-| `magicfw.firewall.allow_external`      | Enables access to external networks (e.g., the internet) for the container.                                                                   | `false`     |
+| `magicfw.firewall.allow_external`      | Enables access from external networks (e.g., the internet) for the container.                                                                   | `false`     |
 
 ### Behavior and Functionalities
 - **Allow ICC (Inter-Container Communication):** When `magicfw.firewall.allow_icc` is `true`, the container can communicate with other containers across **different Docker networks** (useful for applications like reverse proxies such as Traefik). If `false`, the container is isolated from other Docker networks (default Docker behavior).
-- **External Traffic:** When `magicfw.firewall.allow_external` is `true`, the container's network rules allow communication with external IPs.
+- **External Traffic:** When `magicfw.firewall.allow_external` is `true`, the container's network rules allow communication from external networks (useful when NAT is disabled).
 - **Automatic Rule Cleanup:** When a container is restarted, stopped, or removed, the corresponding firewall rules are automatically cleaned.
 - **Support for Published Ports:** Rules are auto-generated for any published ports, restricting incoming traffic to only the ports explicitly exposed via Docker.
 
