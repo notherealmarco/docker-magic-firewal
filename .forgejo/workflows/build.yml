@@ -71,5 +71,5 @@ jobs:
           PACKAGE_NAME="magicfw_${VERSION}_amd64.deb"  # Update version accordingly
 
           curl --user "your_username:$FORGEJO_TOKEN" \
-               --upload-file ../${PACKAGE_NAME} \
+               --upload-file ./${PACKAGE_NAME} \
                "https://git.marcorealacci.me/api/packages/${{ github.repository_owner }}/debian/pool/${{env.DISTRIBUTION}}/${{env.COMPONENT}}/upload"
