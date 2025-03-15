@@ -1,12 +1,15 @@
-name: Build and Deploy Debian Package
+name: Build and Publish Debian Package
 
 on:
   push:
-    tags:
-      - '*'
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
 
 jobs:
-  build-package:
+  build:
     runs-on: docker
     container:
       image: catthehacker/ubuntu:act-latest
@@ -14,31 +17,43 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Parse distribution
-        run: |
-          if [[ "$GITHUB_REF_NAME" == *"@stable"* ]]; then
-            echo "DISTRO=stable" >> $GITHUB_ENV
-          else
-            echo "DISTRO=unstable" >> $GITHUB_ENV
-          fi
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.13'
 
-      - name: Setup Debian Packaging
+      - name: Install FPM dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y devscripts debhelper dh-python dh-systemd build-essential
+          sudo apt-get install -y ruby ruby-dev build-essential
+          sudo gem install --no-document fpm
 
-      - name: Build Debian Package
+      - name: Prepare package structure
         run: |
-          debuild -us -uc -b
+          # Create temporary packaging directory
+          mkdir -p package/usr/local/bin
+          mkdir -p package/etc/systemd/system
+          # Copy main.py as the executable and rename if needed
+          cp main.py package/usr/local/bin/magicfw
+          chmod +x package/usr/local/bin/magicfw
+          # Copy the systemd service file
+          cp systemd/magicfw.service package/etc/systemd/system/
 
-      - name: Upload to Forgejo Debian Registry
-        env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+      - name: Build Debian package with FPM
         run: |
-          PACKAGE_NAME="magicfw_0.1.0-1_all.deb"  # Update version accordingly
-          DISTRO="debian"  # e.g., bullseye, bookworm
-          COMPONENT="main"
+          # The -s dir option tells FPM the source is a directory.
+          # The -t deb option builds a deb package.
+          # -n is the package name and -v the version.
+          fpm -s dir -t deb -n magicfw -v 1.0.0 -C package .
 
-          curl --user "your_username:$FORGEJO_TOKEN" \
-               --upload-file ../${PACKAGE_NAME} \
-               "https://git.marcorealacci.me/api/packages/${{ github.repository_owner }}/debian/pool/${DISTRO}/${COMPONENT}/${PACKAGE_NAME}"
+      # - name: Upload to Forgejo Debian Registry
+      #   env:
+      #     FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+      #   run: |
+      #     PACKAGE_NAME="@magicfw_1.0.0_amd64.deb"  # Update version accordingly
+      #     DISTRO="debian"  # e.g., bullseye, bookworm
+      #     COMPONENT="main"
+
+      #     curl --user "your_username:$FORGEJO_TOKEN" \
+      #          --upload-file ../${PACKAGE_NAME} \
+      #          "https://git.marcorealacci.me/api/packages/${{ github.repository_owner }}/debian/pool/${DISTRO}/${COMPONENT}/${PACKAGE_NAME}"
