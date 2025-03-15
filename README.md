@@ -1,4 +1,4 @@
-# Docker Magic Firewall
+# Docker Magic Firewall Service: README.md
 
 ## Project Overview
 
@@ -27,6 +27,11 @@ You can define rules per container using specific Docker labels:
 - **External Traffic:** When `magicfw.firewall.allow_external` is `true`, the container's network rules allow communication with external IPs.
 - **Automatic Rule Cleanup:** When a container is restarted, stopped, or removed, the corresponding firewall rules are automatically cleaned.
 - **Support for Published Ports:** Rules are auto-generated for any published ports, restricting incoming traffic to only the ports explicitly exposed via Docker.
+
+## Install
+To make the installation easy, I provide a package for Debian-based distros, follow the instructions here: [https://git.marcorealacci.me/marcorealacci/-/packages/debian/magicfw-docker](https://git.marcorealacci.me/marcorealacci/-/packages/debian/magicfw-docker)
+
+To install the script manually, the required dependencies are `python3` and the `docker` library available from PyPI (`pip3 install docker`).
 
 ## Configuration
 
