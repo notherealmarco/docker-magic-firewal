@@ -58,7 +58,9 @@ jobs:
           # The -s dir option tells FPM the source is a directory.
           # The -t deb option builds a deb package.
           # -n is the package name and -v the version.
-          fpm -s dir -t deb -n magicfw-docker -v $VERSION -C package .
+          fpm -s dir -t deb -n magicfw-docker -v $VERSION -C package \
+              -d "python3" \
+              -d "python3-docker"
 
       - name: Upload to Forgejo Debian Registry
         env:
