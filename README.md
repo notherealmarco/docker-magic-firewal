@@ -61,8 +61,6 @@ services:
     labels:
       magicfw.firewall.allow_icc: "true"
       magicfw.firewall.allow_external: "true"
-    ports:
-      - 8080:80
 ```
 
 In the above example:
