@@ -65,7 +65,7 @@ services:
 
 In the above example:
 - The `web` container can communicate with other containers on different Docker networks (`magicfw.firewall.allow_icc: true`).
-- The container can be accessed by external hosts using the container's IP (`magicfw.firewall.allow_external: true`).
+- The container can be accessed by external hosts using the container's IP (**not host IP!**) (`magicfw.firewall.allow_external: true`). This requires a route on other hosts or the router.
 
 #### Example 2
 ```yaml
@@ -95,7 +95,7 @@ services:
 
 In the above example:
 - The `web` container can communicate with other containers on different Docker networks (`magicfw.firewall.allow_icc: true`).
-- External hosts can access the container via both <container IP>:80 and <host IP>:8080 (port mapping still works even with DISABLE_NAT)
+- External hosts can access the container via both <container IP>:80 and <host IP>:8080 (port mapping still works even with `DISABLE_NAT` set to `true`, as only Source NAT will be disabled)
 - External hosts will not be able to access the container on ports other than 80
 
 ---
