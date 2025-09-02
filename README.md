@@ -45,6 +45,7 @@ Below is a table of environment variables that can be customized within the syst
 | `ENABLE_IPV4`      | Enables IPv4 firewall rule management.                                                                  | `true`            |
 | `ENABLE_IPV6`      | Enables IPv6 firewall rule management.                                                                  | `true`            |
 | `DISABLE_NAT`      | Disables Source NAT rules for Docker containers (a static route will be needed on the router!).         | `true`            |
+| `REMOVE_RAW_DROPS` | Removes Docker's raw table PREROUTING DROP rules that block external ingress to Docker bridge/container IPs. If disabled, this script may not function correctly | `true`            |
 
 ---
 
