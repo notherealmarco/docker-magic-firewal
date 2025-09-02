@@ -5,6 +5,7 @@ import logging
 import signal
 import subprocess
 import ipaddress
+import re
 from docker import from_env
 from docker.errors import DockerException
 
@@ -40,7 +41,10 @@ def add_rule_if_not_exists(insert_command):
 def setup_default_rule(subnets, ip_version="ipv4"):
     """Ensure stateful default rules exist in DOCKER-USER chain."""
     # Remove default RETURN statement
-    run_iptables_command("iptables -D DOCKER-USER -j RETURN")
+    if ip_version == "ipv4":
+        run_iptables_command("iptables -D DOCKER-USER -j RETURN")
+    else:
+        run_iptables_command("ip6tables -D DOCKER-USER -j RETURN")
     for subnet in subnets:
         # IPv4 Rules
         if ip_version == "ipv4" and ":" not in subnet:
@@ -224,6 +228,124 @@ def clean_docker_nat_rules(docker_subnets, ip_version="ipv4"):
     except subprocess.CalledProcessError as e:
         logging.error(f"Error cleaning NAT rules: {e.stderr.decode()}")
 
+def get_docker_bridge_networks():
+    """Return IPv4/IPv6 networks for Docker bridge interfaces br-<12hex>.
+
+    Returns:
+        (v4_map, v6_map): Tuple of dicts mapping iface -> set(ip_network)
+    """
+    v4_map = {}
+    v6_map = {}
+    try:
+        res = subprocess.run(
+            "ip -j addr show",
+            shell=True,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        data = json.loads(res.stdout.decode() or "[]")
+        br_re = re.compile(r"^br-[0-9a-f]{12}$")
+        for iface in data:
+            name = iface.get("ifname")
+            if not name or not br_re.match(name):
+                continue
+            for addr in iface.get("addr_info", []):
+                local = addr.get("local")
+                fam = addr.get("family")
+                prefixlen = addr.get("prefixlen")
+                if not local or not fam or prefixlen is None:
+                    continue
+                try:
+                    net = ipaddress.ip_network(f"{local}/{prefixlen}", strict=False)
+                except ValueError:
+                    continue
+                if fam == "inet" and net.version == 4:
+                    v4_map.setdefault(name, set()).add(net)
+                elif fam == "inet6" and net.version == 6:
+                    v6_map.setdefault(name, set()).add(net)
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error reading bridge networks: {e.stderr.decode()}")
+    except json.JSONDecodeError:
+        logging.error("Failed to parse 'ip -j addr show' output")
+    return v4_map, v6_map
+
+def clean_docker_raw_prerouting_drop_rules(ip_version="ipv4"):
+    """Detect and remove Docker's raw PREROUTING DROP rules that block external ingress to bridge IPs.
+
+    Strategy: match rules that contain all of the following:
+      - chain PREROUTING in raw table
+      - target DROP
+      - negated in-interface for a docker bridge: ! -i br-<12hex>
+      - destination equals an IP address assigned to that same bridge
+    Only those rules are removed; others are left untouched.
+    """
+    table = "ip6tables" if ip_version == "ipv6" else "iptables"
+    v4_map, v6_map = get_docker_bridge_networks()
+    net_map = v6_map if ip_version == "ipv6" else v4_map
+
+    try:
+        res = subprocess.run(
+            f"{table} -t raw -S PREROUTING",
+            shell=True,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        rules = res.stdout.decode().splitlines()
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error listing raw PREROUTING rules: {e.stderr.decode()}")
+        return
+
+    deleted = 0
+    br_name_re = re.compile(r"^br-[0-9a-f]{12}$")
+
+    for rule in rules:
+        # Only consider append rules with DROP in PREROUTING
+        if "-A PREROUTING" not in rule or " -j DROP" not in rule:
+            continue
+
+        tokens = rule.split()
+        # Find negated -i iface pattern: '! -i br-xxxx' (typical iptables-save format)
+        neg_iface = None
+        for i in range(len(tokens) - 2):
+            if tokens[i] == "!" and tokens[i+1] == "-i":
+                neg_iface = tokens[i+2]
+                break
+        if not neg_iface or not br_name_re.match(neg_iface):
+            continue
+
+        # Find destination ip
+        dest_ip = None
+        for i in range(len(tokens) - 1):
+            if tokens[i] == "-d":
+                dest_ip = tokens[i+1]
+                break
+        if not dest_ip:
+            continue
+        # Strip CIDR if present
+        dest_ip_only = dest_ip.split("/")[0]
+
+        # Verify destination belongs to a network on this bridge interface
+        try:
+            dest_addr = ipaddress.ip_address(dest_ip_only)
+        except ValueError:
+            continue
+        iface_nets = net_map.get(neg_iface, set())
+        if not any(dest_addr in n for n in iface_nets):
+            continue
+
+        # Construct delete form of the rule; replace first '-A' with '-D'
+        del_rule = rule.replace("-A", "-D", 1)
+        run_iptables_command(f"{table} -t raw {del_rule}")
+        logging.info(f"Removed Docker raw DROP rule: {table} -t raw {del_rule}")
+        deleted += 1
+
+    if deleted:
+        logging.info(f"Removed {deleted} Docker raw PREROUTING DROP rule(s) for {ip_version}")
+    else:
+        logging.debug(f"No matching Docker raw PREROUTING DROP rules found for {ip_version}")
+
 def clean_up_rules(docker_client, ip_version="ipv4", specific_container_id=None):
     """Remove stale rules from iptables including published port rules."""
     table = "ip6tables" if ip_version == "ipv6" else "iptables"
@@ -270,6 +392,11 @@ def handle_event(event, docker_client, subnets, enable_ipv4, enable_ipv6):
                     manage_firewall_rules(container, subnets, "ipv4")
                 if enable_ipv6 and container:
                     manage_firewall_rules(container, subnets, "ipv6")
+                # Docker may re-add raw DROP rules on container events; clean them
+                if enable_ipv4:
+                    clean_docker_raw_prerouting_drop_rules("ipv4")
+                if enable_ipv6:
+                    clean_docker_raw_prerouting_drop_rules("ipv6")
 
             elif action in ['die', 'destroy']:
                 logging.info(f"Container {container_id[:12]} {action}, cleaning rules")
@@ -299,6 +426,11 @@ def handle_event(event, docker_client, subnets, enable_ipv4, enable_ipv6):
                     clean_docker_nat_rules(subnets, "ipv4")
                 if enable_ipv6:
                     clean_docker_nat_rules(subnets, "ipv6")
+                # Also remove any raw DROP rules Docker may have (re)installed
+                if enable_ipv4:
+                    clean_docker_raw_prerouting_drop_rules("ipv4")
+                if enable_ipv6:
+                    clean_docker_raw_prerouting_drop_rules("ipv6")
 
     except Exception as e:
         logging.error(f"Error handling event: {str(e)}")
@@ -311,6 +443,7 @@ def main_loop():
     enable_ipv4 = os.getenv("ENABLE_IPV4", "true").lower() == "true"
     enable_ipv6 = os.getenv("ENABLE_IPV6", "true").lower() == "true"
     disable_nat = os.getenv("DISABLE_NAT", "true").lower() == "true"
+    disable_raw_drops = os.getenv("REMOVE_RAW_DROPS", "true").lower() == "true"
 
     subnets = parse_daemon_json()
     docker_client = from_env()
@@ -321,6 +454,12 @@ def main_loop():
         if enable_ipv6:
             clean_docker_nat_rules(subnets, "ipv6")
 
+    if disable_raw_drops:
+        if enable_ipv4:
+            clean_docker_raw_prerouting_drop_rules("ipv4")
+        if enable_ipv6:
+            clean_docker_raw_prerouting_drop_rules("ipv6")
+
     if enable_ipv4:
         setup_default_rule(subnets, "ipv4")
         for container in docker_client.containers.list():
@@ -328,7 +467,7 @@ def main_loop():
         clean_up_rules(docker_client, "ipv4")
 
     if enable_ipv6:
-        # setup_default_rule(subnets, "ipv6")
+        setup_default_rule(subnets, "ipv6")
         for container in docker_client.containers.list():
             manage_firewall_rules(container, subnets, "ipv6")
         clean_up_rules(docker_client, "ipv6")
