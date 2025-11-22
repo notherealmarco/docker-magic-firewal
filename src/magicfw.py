@@ -82,6 +82,7 @@ Environment Variables:
   CLEAN_ON_EXIT      (default true) -> delete table inet magicfw on shutdown
   DRY_RUN            (default false) -> only log nft commands
   EVENT_BACKOFF_SECS (default 2) -> minimal sleep on certain transient errors
+  ENABLE_MASQUERADE  (default false) -> enable masquerade for outbound traffic
 
 Future Extensions (not implemented yet):
   - Group-based ICC (label like magicfw.firewall.icc_group)
@@ -125,20 +126,20 @@ class ContainerNetInfo:
     external_udp_v4: Set[Tuple[str, int]] = field(default_factory=set)
     external_tcp_v6: Set[Tuple[str, int]] = field(default_factory=set)
     external_udp_v6: Set[Tuple[str, int]] = field(default_factory=set)
+    # DNAT Fields: (HostIp, HostPort, ContainerIP, ContainerPort)
+    dnat_tcp_v4: Set[Tuple[str, int, str, int]] = field(default_factory=set)
+    dnat_udp_v4: Set[Tuple[str, int, str, int]] = field(default_factory=set)
+    dnat_tcp_v6: Set[Tuple[str, int, str, int]] = field(default_factory=set)
+    dnat_udp_v6: Set[Tuple[str, int, str, int]] = field(default_factory=set)
 
 
 class NftManager:
-    """Encapsulates nftables interaction.
-
-    Current implementation rebuilds the full table on each sync (simpler /
-    safe). Optimization to incremental updates can come later.
-    """
-
     TABLE_NAME = "magicfw"
     FAMILY = "inet"
 
-    def __init__(self, dry_run: bool = False):
+    def __init__(self, dry_run: bool = False, enable_masquerade: bool = False):
         self.dry_run = dry_run
+        self.enable_masquerade = enable_masquerade
 
     def run(self, cmd: List[str]):
         if self.dry_run:
@@ -150,12 +151,6 @@ class NftManager:
             logging.error(f"nft command failed: nft {' '.join(cmd)}\n{e.stderr.decode(errors='ignore')}")
 
     def apply_table(self, spec: str):
-        """Replace the magicfw table with the provided specification.
-
-        We first try to delete existing table (ignore failure) then load new spec.
-        The spec itself only contains a 'table' construct (no delete line) to
-        avoid parse errors when the table is absent.
-        """
         try:
             subprocess.run(["nft", "delete", "table", self.FAMILY, self.TABLE_NAME], check=True,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -165,7 +160,8 @@ class NftManager:
             logging.info("[DRY-RUN] applying nft spec:\n" + spec)
             return
         try:
-            subprocess.run(["nft", "-f", "-"], input=spec.encode(), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["nft", "-f", "-"], input=spec.encode(), check=True, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to apply nftables spec:\n{spec}\nError: {e.stderr.decode(errors='ignore')}")
 
@@ -173,20 +169,39 @@ class NftManager:
         self.run(["delete", "table", self.FAMILY, self.TABLE_NAME])
 
     def build_spec(
-        self,
-        docker_ifaces: Set[str],
-        allow_icc_v4: Set[str], allow_icc_v6: Set[str],
-        external_any_v4: Set[str], external_any_v6: Set[str],
-        external_tcp_v4: Set[Tuple[str, int]], external_udp_v4: Set[Tuple[str, int]],
-        external_tcp_v6: Set[Tuple[str, int]], external_udp_v6: Set[Tuple[str, int]],
+            self,
+            docker_ifaces: Set[str],
+            allow_icc_v4: Set[str], allow_icc_v6: Set[str],
+            external_any_v4: Set[str], external_any_v6: Set[str],
+            external_tcp_v4: Set[Tuple[str, int]], external_udp_v4: Set[Tuple[str, int]],
+            external_tcp_v6: Set[Tuple[str, int]], external_udp_v6: Set[Tuple[str, int]],
+            dnat_map_tcp_v4_any: Dict[int, Tuple[str, int]], dnat_map_tcp_v4_spec: Dict[Tuple[str, int], Tuple[str, int]],
+            dnat_map_udp_v4_any: Dict[int, Tuple[str, int]], dnat_map_udp_v4_spec: Dict[Tuple[str, int], Tuple[str, int]],
+            dnat_map_tcp_v6_any: Dict[int, Tuple[str, int]], dnat_map_tcp_v6_spec: Dict[Tuple[str, int], Tuple[str, int]],
+            dnat_map_udp_v6_any: Dict[int, Tuple[str, int]], dnat_map_udp_v6_spec: Dict[Tuple[str, int], Tuple[str, int]],
     ) -> str:
-        """Construct nftables table spec (without pre-delete)."""
+        """Construct nftables table spec (Filter + Dual Stack NAT)."""
 
         def fmt_set(name: str, type_decl: str, elems: List[str]) -> str:
-            # If empty, omit 'elements' clause entirely
             if not elems:
                 return f"    set {name} {{ type {type_decl}; }}\n"
             return f"    set {name} {{ type {type_decl}; elements = {{ {', '.join(elems)} }} }}\n"
+
+        def fmt_map_any(name: str, type_decl: str, entries: Dict[int, Tuple[str, int]]) -> str:
+            if not entries:
+                return f"    map {name} {{ type {type_decl}; }}\n"
+            map_elems = []
+            for hport, (cip, cport) in sorted(entries.items()):
+                map_elems.append(f"{hport} : {cip} . {cport}")
+            return f"    map {name} {{ type {type_decl}; elements = {{ {', '.join(map_elems)} }} }}\n"
+
+        def fmt_map_spec(name: str, type_decl: str, entries: Dict[Tuple[str, int], Tuple[str, int]]) -> str:
+            if not entries:
+                return f"    map {name} {{ type {type_decl}; }}\n"
+            map_elems = []
+            for (hip, hport), (cip, cport) in sorted(entries.items()):
+                map_elems.append(f"{hip} . {hport} : {cip} . {cport}")
+            return f"    map {name} {{ type {type_decl}; elements = {{ {', '.join(map_elems)} }} }}\n"
 
         def fmt_ip_elems(addrs: Set[str]) -> List[str]:
             return sorted(addrs)
@@ -199,7 +214,7 @@ class NftManager:
 
         spec = [f"table {self.FAMILY} {self.TABLE_NAME} {{\n"]
 
-        # Sets
+        # --- SETS ---
         spec.append(fmt_set("docker_ifaces", "ifname", sorted(docker_ifaces)))
         spec.append(fmt_set("allow_icc_v4", "ipv4_addr", fmt_ip_elems(allow_icc_v4)))
         spec.append(fmt_set("allow_icc_v6", "ipv6_addr", fmt_ip_elems(allow_icc_v6)))
@@ -210,25 +225,60 @@ class NftManager:
         spec.append(fmt_set("external_tcp_v6", "ipv6_addr . inet_service", fmt_port_elems(external_tcp_v6)))
         spec.append(fmt_set("external_udp_v6", "ipv6_addr . inet_service", fmt_port_elems(external_udp_v6)))
 
-        # Forward chain rules (order matters)
+        # --- DNAT MAPS ---
+        spec.append(fmt_map_any("dnat_tcp_v4_any", "inet_service : ipv4_addr . inet_service", dnat_map_tcp_v4_any))
+        spec.append(fmt_map_spec("dnat_tcp_v4_spec", "ipv4_addr . inet_service : ipv4_addr . inet_service", dnat_map_tcp_v4_spec))
+        spec.append(fmt_map_any("dnat_udp_v4_any", "inet_service : ipv4_addr . inet_service", dnat_map_udp_v4_any))
+        spec.append(fmt_map_spec("dnat_udp_v4_spec", "ipv4_addr . inet_service : ipv4_addr . inet_service", dnat_map_udp_v4_spec))
+
+        spec.append(fmt_map_any("dnat_tcp_v6_any", "inet_service : ipv6_addr . inet_service", dnat_map_tcp_v6_any))
+        spec.append(fmt_map_spec("dnat_tcp_v6_spec", "ipv6_addr . inet_service : ipv6_addr . inet_service", dnat_map_tcp_v6_spec))
+        spec.append(fmt_map_any("dnat_udp_v6_any", "inet_service : ipv6_addr . inet_service", dnat_map_udp_v6_any))
+        spec.append(fmt_map_spec("dnat_udp_v6_spec", "ipv6_addr . inet_service : ipv6_addr . inet_service", dnat_map_udp_v6_spec))
+
+        # --- NAT CHAINS ---
+        spec.append("    chain prerouting {\n        type nat hook prerouting priority -100; policy accept;\n")
+
+        # IPv4 DNAT
+        spec.append("        fib daddr type local ip protocol tcp dnat to ip daddr . tcp dport map @dnat_tcp_v4_spec\n")
+        spec.append("        fib daddr type local ip protocol tcp dnat to tcp dport map @dnat_tcp_v4_any\n")
+        spec.append("        fib daddr type local ip protocol udp dnat to ip daddr . udp dport map @dnat_udp_v4_spec\n")
+        spec.append("        fib daddr type local ip protocol udp dnat to udp dport map @dnat_udp_v4_any\n")
+
+        # IPv6 DNAT
+        spec.append("        fib daddr type local meta nfproto ipv6 meta l4proto tcp dnat to ip6 daddr . tcp dport map @dnat_tcp_v6_spec\n")
+        spec.append("        fib daddr type local meta nfproto ipv6 meta l4proto tcp dnat to tcp dport map @dnat_tcp_v6_any\n")
+        spec.append("        fib daddr type local meta nfproto ipv6 meta l4proto udp dnat to ip6 daddr . udp dport map @dnat_udp_v6_spec\n")
+        spec.append("        fib daddr type local meta nfproto ipv6 meta l4proto udp dnat to udp dport map @dnat_udp_v6_any\n")
+
+        spec.append("    }\n")
+
+        spec.append("    chain postrouting {\n        type nat hook postrouting priority 100; policy accept;\n")
+        if self.enable_masquerade:
+            # Masquerade IPv4 (Standard Docker behavior)
+            spec.append("        meta nfproto ipv4 iifname @docker_ifaces oifname != @docker_ifaces masquerade\n")
+            spec.append("        meta nfproto ipv4 iifname @docker_ifaces oifname @docker_ifaces masquerade\n")
+        spec.append("    }\n")
+
+        # --- FILTER CHAIN ---
         forward_rules: List[str] = [
             "ct state established,related accept",
-            "iifname != @docker_ifaces oifname @docker_ifaces ip daddr @external_any_v4 accept",
-            "iifname != @docker_ifaces oifname @docker_ifaces ip6 daddr @external_any_v6 accept",
-            # Per-port allowances (layer 3 family first, then tuple)
-            "iifname != @docker_ifaces oifname @docker_ifaces ip daddr . tcp dport @external_tcp_v4 accept",
-            "iifname != @docker_ifaces oifname @docker_ifaces ip daddr . udp dport @external_udp_v4 accept",
-            "iifname != @docker_ifaces oifname @docker_ifaces ip6 daddr . tcp dport @external_tcp_v6 accept",
-            "iifname != @docker_ifaces oifname @docker_ifaces ip6 daddr . udp dport @external_udp_v6 accept",
+            # IPv4 Accepts
+            "meta nfproto ipv4 iifname != @docker_ifaces oifname @docker_ifaces ip daddr @external_any_v4 accept",
+            "meta nfproto ipv4 iifname != @docker_ifaces oifname @docker_ifaces ip daddr . tcp dport @external_tcp_v4 accept",
+            "meta nfproto ipv4 iifname != @docker_ifaces oifname @docker_ifaces ip daddr . udp dport @external_udp_v4 accept",
+            # IPv6 Accepts
+            "meta nfproto ipv6 iifname != @docker_ifaces oifname @docker_ifaces ip6 daddr @external_any_v6 accept",
+            "meta nfproto ipv6 iifname != @docker_ifaces oifname @docker_ifaces ip6 daddr . tcp dport @external_tcp_v6 accept",
+            "meta nfproto ipv6 iifname != @docker_ifaces oifname @docker_ifaces ip6 daddr . udp dport @external_udp_v6 accept",
+            # Drop all other external ingress to docker
             "iifname != @docker_ifaces oifname @docker_ifaces drop",
         ]
 
-        # Cross-bridge isolation via explicit interface pairs
         if len(docker_ifaces) > 1:
             for src in sorted(docker_ifaces):
                 for dst in sorted(docker_ifaces):
-                    if src == dst:
-                        continue
+                    if src == dst: continue
                     forward_rules.append(f'iifname "{src}" oifname "{dst}" ip saddr != @allow_icc_v4 drop')
                     forward_rules.append(f'iifname "{src}" oifname "{dst}" ip6 saddr != @allow_icc_v6 drop')
 
@@ -251,6 +301,14 @@ class NftManager:
             external_udp_v4=state.external_udp_v4,
             external_tcp_v6=state.external_tcp_v6,
             external_udp_v6=state.external_udp_v6,
+            dnat_map_tcp_v4_any=state.dnat_map_tcp_v4_any,
+            dnat_map_tcp_v4_spec=state.dnat_map_tcp_v4_spec,
+            dnat_map_udp_v4_any=state.dnat_map_udp_v4_any,
+            dnat_map_udp_v4_spec=state.dnat_map_udp_v4_spec,
+            dnat_map_tcp_v6_any=state.dnat_map_tcp_v6_any,
+            dnat_map_tcp_v6_spec=state.dnat_map_tcp_v6_spec,
+            dnat_map_udp_v6_any=state.dnat_map_udp_v6_any,
+            dnat_map_udp_v6_spec=state.dnat_map_udp_v6_spec,
         )
         self.apply_table(spec)
 
@@ -267,9 +325,15 @@ class GlobalState:
     external_tcp_v6: Set[Tuple[str, int]] = field(default_factory=set)
     external_udp_v6: Set[Tuple[str, int]] = field(default_factory=set)
 
-    def reset_dynamic(self):
-        # (Reserved for future incremental diff logic)
-        pass
+    dnat_map_tcp_v4_any: Dict[int, Tuple[str, int]] = field(default_factory=dict)
+    dnat_map_tcp_v4_spec: Dict[Tuple[str, int], Tuple[str, int]] = field(default_factory=dict)
+    dnat_map_udp_v4_any: Dict[int, Tuple[str, int]] = field(default_factory=dict)
+    dnat_map_udp_v4_spec: Dict[Tuple[str, int], Tuple[str, int]] = field(default_factory=dict)
+
+    dnat_map_tcp_v6_any: Dict[int, Tuple[str, int]] = field(default_factory=dict)
+    dnat_map_tcp_v6_spec: Dict[Tuple[str, int], Tuple[str, int]] = field(default_factory=dict)
+    dnat_map_udp_v6_any: Dict[int, Tuple[str, int]] = field(default_factory=dict)
+    dnat_map_udp_v6_spec: Dict[Tuple[str, int], Tuple[str, int]] = field(default_factory=dict)
 
 
 class MagicFirewallV2:
@@ -278,32 +342,27 @@ class MagicFirewallV2:
         self.enable_ipv6 = env_bool("ENABLE_IPV6", True)
         self.clean_on_exit = env_bool("CLEAN_ON_EXIT", True)
         self.dry_run = env_bool("DRY_RUN", False)
+        self.enable_masquerade = env_bool("ENABLE_MASQUERADE", False)
         self.event_backoff = float(os.getenv("EVENT_BACKOFF_SECS", "2"))
         self.state = GlobalState()
-        self.nft = NftManager(dry_run=self.dry_run)
+        self.nft = NftManager(dry_run=self.dry_run, enable_masquerade=self.enable_masquerade)
         self.docker_client = from_env()
         self.running = True
 
     # ---------------- Docker Introspection -----------------
     def list_docker_bridges(self) -> Set[str]:
-        """Discover docker bridge interfaces (br-<12hex>)."""
         pattern = re.compile(r"^br-[0-9a-f]{12}$")
         bridges: Set[str] = set()
         try:
             out = subprocess.run(["ip", "-o", "link"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             for line in out.stdout.decode().splitlines():
                 parts = line.split(":", 2)
-                if len(parts) < 2:
-                    continue
+                if len(parts) < 2: continue
                 name = parts[1].strip()
-                if pattern.match(name):
+                if pattern.match(name) or name == "docker0":
                     bridges.add(name)
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to list links: {e.stderr.decode(errors='ignore')}")
-        if not bridges:
-            logging.warning("No Docker bridge interfaces detected (docker_ifaces set will be empty)")
-        else:
-            logging.debug(f"Detected Docker bridges: {', '.join(sorted(bridges))}")
+        except subprocess.CalledProcessError:
+            pass
         return bridges
 
     def collect_containers(self) -> List[ContainerNetInfo]:
@@ -313,116 +372,99 @@ class MagicFirewallV2:
         except DockerException as e:
             logging.error(f"Docker list error: {e}")
             return infos
+
         for c in containers:
             cid = c.id[:12]
             labels = c.labels or {}
             info = ContainerNetInfo(container_id=cid)
+
             net_settings = c.attrs.get("NetworkSettings", {}).get("Networks", {})
             for net_name, net in net_settings.items():
                 ip4 = net.get("IPAddress")
                 ip6 = net.get("GlobalIPv6Address")
-                if self.enable_ipv4 and ip4:
-                    info.ipv4_addrs.add(ip4)
-                if self.enable_ipv6 and ip6:
-                    info.ipv6_addrs.add(ip6)
+                if self.enable_ipv4 and ip4: info.ipv4_addrs.add(ip4)
+                if self.enable_ipv6 and ip6: info.ipv6_addrs.add(ip6)
 
-            # allow_icc (initiator semantics)
             if labels.get(ICC_LABEL, "false").strip().lower() in {"1", "true", "yes"}:
                 info.allow_icc_v4 |= info.ipv4_addrs
                 info.allow_icc_v6 |= info.ipv6_addrs
 
-            # allow_external parsing
             raw_ext = labels.get(EXT_LABEL, "false").strip().lower()
             if raw_ext in {"1", "true", "yes", "*"}:
                 info.external_any_v4 |= info.ipv4_addrs
                 info.external_any_v6 |= info.ipv6_addrs
             elif raw_ext not in {"false", "0", ""}:
-                # Port list parsing
                 ports = [p.strip() for p in raw_ext.split(",") if p.strip()]
                 for token in ports:
                     if "/" in token:
-                        port_part, proto = token.split("/", 1)
-                        proto = proto.lower()
+                        port_part, proto = token.split("/", 1); proto = proto.lower()
                     else:
-                        port_part, proto = token, "tcp"  # default
-                    if not port_part.isdigit():
-                        logging.warning(f"Invalid port token '{token}' in {cid}")
-                        continue
+                        port_part, proto = token, "tcp"
+                    if not port_part.isdigit(): continue
                     port = int(port_part)
-                    if port < 1 or port > 65535:
-                        logging.warning(f"Out-of-range port '{port}' in {cid}")
-                        continue
                     if proto == "tcp":
-                        for ip4 in info.ipv4_addrs:
-                            info.external_tcp_v4.add((ip4, port))
-                        for ip6 in info.ipv6_addrs:
-                            info.external_tcp_v6.add((ip6, port))
+                        for ip4 in info.ipv4_addrs: info.external_tcp_v4.add((ip4, port))
+                        for ip6 in info.ipv6_addrs: info.external_tcp_v6.add((ip6, port))
                     elif proto == "udp":
-                        for ip4 in info.ipv4_addrs:
-                            info.external_udp_v4.add((ip4, port))
-                        for ip6 in info.ipv6_addrs:
-                            info.external_udp_v6.add((ip6, port))
-                    else:
-                        logging.warning(f"Unsupported proto '{proto}' in token '{token}' for {cid}")
+                        for ip4 in info.ipv4_addrs: info.external_udp_v4.add((ip4, port))
+                        for ip6 in info.ipv6_addrs: info.external_udp_v6.add((ip6, port))
 
-            # Published ports (implicit allow specific ports)
             ports_map = c.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
             for port_proto, bindings in ports_map.items():
-                # port_proto example: "8080/tcp"
-                if not bindings:
-                    continue  # exposed but not published
+                if not bindings: continue
                 try:
-                    port_str, proto = port_proto.split("/")
-                    port = int(port_str)
+                    cont_port_str, proto = port_proto.split("/")
+                    cont_port = int(cont_port_str)
                 except ValueError:
                     continue
                 proto = proto.lower()
-                if proto == "tcp":
-                    for ip4 in info.ipv4_addrs:
-                        info.external_tcp_v4.add((ip4, port))
-                    for ip6 in info.ipv6_addrs:
-                        info.external_tcp_v6.add((ip6, port))
-                elif proto == "udp":
-                    for ip4 in info.ipv4_addrs:
-                        info.external_udp_v4.add((ip4, port))
-                    for ip6 in info.ipv6_addrs:
-                        info.external_udp_v6.add((ip6, port))
+
+                for bind in bindings:
+                    host_port_str = bind.get("HostPort")
+                    host_ip = bind.get("HostIp") or "0.0.0.0"
+                    if not host_port_str: continue
+                    host_port = int(host_port_str)
+
+                    target_ip4 = next(iter(info.ipv4_addrs), None)
+                    if target_ip4 and self.enable_ipv4:
+                        if proto == "tcp":
+                            info.external_tcp_v4.add((target_ip4, cont_port))
+                            info.dnat_tcp_v4.add((host_ip, host_port, target_ip4, cont_port))
+                        elif proto == "udp":
+                            info.external_udp_v4.add((target_ip4, cont_port))
+                            info.dnat_udp_v4.add((host_ip, host_port, target_ip4, cont_port))
+
+                    target_ip6 = next(iter(info.ipv6_addrs), None)
+                    if target_ip6 and self.enable_ipv6:
+                        if proto == "tcp":
+                            info.external_tcp_v6.add((target_ip6, cont_port))
+                            info.dnat_tcp_v6.add((host_ip, host_port, target_ip6, cont_port))
+                        elif proto == "udp":
+                            info.external_udp_v6.add((target_ip6, cont_port))
+                            info.dnat_udp_v6.add((host_ip, host_port, target_ip6, cont_port))
 
             infos.append(info)
         return infos
 
-    # ---------------- State Synthesis -----------------
     def rebuild_state(self):
         self.state.docker_ifaces = self.list_docker_bridges()
-
-        # Clear sets
-        self.state.allow_icc_v4.clear(); self.state.allow_icc_v6.clear()
-        self.state.external_any_v4.clear(); self.state.external_any_v6.clear()
-        self.state.external_tcp_v4.clear(); self.state.external_udp_v4.clear()
-        self.state.external_tcp_v6.clear(); self.state.external_udp_v6.clear()
+        self.state.allow_icc_v4.clear();
+        self.state.allow_icc_v6.clear()
+        self.state.external_any_v4.clear();
+        self.state.external_any_v6.clear()
+        self.state.external_tcp_v4.clear();
+        self.state.external_udp_v4.clear()
+        self.state.external_tcp_v6.clear();
+        self.state.external_udp_v6.clear()
+        self.state.dnat_map_tcp_v4_any.clear(); self.state.dnat_map_tcp_v4_spec.clear()
+        self.state.dnat_map_udp_v4_any.clear(); self.state.dnat_map_udp_v4_spec.clear()
+        self.state.dnat_map_tcp_v6_any.clear(); self.state.dnat_map_tcp_v6_spec.clear()
+        self.state.dnat_map_udp_v6_any.clear(); self.state.dnat_map_udp_v6_spec.clear()
 
         infos = self.collect_containers()
-        # Fallback: if docker_ifaces empty but we have containers, attempt to
-        # derive bridge names from their networks via /sys/class/net lookup.
-        if not self.state.docker_ifaces and infos:
-            guessed: Set[str] = set()
-            for info in infos:
-                # Heuristic: inspect routing table for each IP's dev (ip -j route get)
-                for ipaddr in list(info.ipv4_addrs)[:1]:  # sample one per container
-                    try:
-                        rt = subprocess.run(["ip", "-j", "route", "get", ipaddr],
-                                            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                        import json as _json
-                        data = _json.loads(rt.stdout.decode() or '[]')
-                        if data and isinstance(data, list):
-                            dev = data[0].get('dev')
-                            if dev and dev.startswith('br-') and len(dev) == 16:
-                                guessed.add(dev)
-                    except Exception:
-                        continue
-            if guessed:
-                logging.warning(f"Inferring docker bridges (fallback): {', '.join(sorted(guessed))}")
-                self.state.docker_ifaces |= guessed
+        if not self.state.docker_ifaces and infos and os.path.exists("/sys/class/net/docker0"):
+            self.state.docker_ifaces.add("docker0")
+
         for info in infos:
             self.state.allow_icc_v4 |= info.allow_icc_v4
             self.state.allow_icc_v6 |= info.allow_icc_v6
@@ -432,46 +474,46 @@ class MagicFirewallV2:
             self.state.external_udp_v4 |= info.external_udp_v4
             self.state.external_tcp_v6 |= info.external_tcp_v6
             self.state.external_udp_v6 |= info.external_udp_v6
-        logging.debug(
-            "State summary: bridges=%s allow_icc_v4=%d external_any_v4=%d tcp_v4=%d udp_v4=%d", 
-            ','.join(sorted(self.state.docker_ifaces)) or '-',
-            len(self.state.allow_icc_v4), len(self.state.external_any_v4),
-            len(self.state.external_tcp_v4), len(self.state.external_udp_v4)
-        )
 
-    # ---------------- Event Loop -----------------
+            # Populate DNAT maps
+            for hip, hp, cip, cp in info.dnat_tcp_v4:
+                if hip in {"0.0.0.0", "::", ""}: self.state.dnat_map_tcp_v4_any[hp] = (cip, cp)
+                else: self.state.dnat_map_tcp_v4_spec[(hip, hp)] = (cip, cp)
+            for hip, hp, cip, cp in info.dnat_udp_v4:
+                if hip in {"0.0.0.0", "::", ""}: self.state.dnat_map_udp_v4_any[hp] = (cip, cp)
+                else: self.state.dnat_map_udp_v4_spec[(hip, hp)] = (cip, cp)
+            for hip, hp, cip, cp in info.dnat_tcp_v6:
+                if hip in {"0.0.0.0", "::", ""}: self.state.dnat_map_tcp_v6_any[hp] = (cip, cp)
+                else: self.state.dnat_map_tcp_v6_spec[(hip, hp)] = (cip, cp)
+            for hip, hp, cip, cp in info.dnat_udp_v6:
+                if hip in {"0.0.0.0", "::", ""}: self.state.dnat_map_udp_v6_any[hp] = (cip, cp)
+                else: self.state.dnat_map_udp_v6_spec[(hip, hp)] = (cip, cp)
+
+        logging.info(
+            f"State Rebuilt: {len(infos)} containers. v4Ports:{len(self.state.dnat_map_tcp_v4_any) + len(self.state.dnat_map_tcp_v4_spec)}")
+
     def event_loop(self):
         filters = {"type": ["container", "network"]}
         events = self.docker_client.events(decode=True, filters=filters)
-        logging.info("Listening for Docker events (v2 nft backend)...")
+        logging.info("Listening for Docker events...")
         while self.running:
             try:
                 for event in events:
-                    etype = event.get('Type')
                     action = event.get('Action')
-                    if etype == 'container' and action in {'start', 'restart', 'die', 'destroy'}:
-                        logging.debug(f"Container event {action}")
+                    if action in {'start', 'restart', 'die', 'destroy', 'connect', 'disconnect'}:
                         self.rebuild_state()
                         self.nft.sync(self.state)
-                    elif etype == 'network' and action in {'create', 'destroy', 'connect', 'disconnect'}:
-                        logging.debug(f"Network event {action}")
-                        self.rebuild_state()
-                        self.nft.sync(self.state)
-            except DockerException as e:
-                logging.error(f"Docker event stream error: {e}; retrying in {self.event_backoff}s")
+            except Exception as e:
+                logging.error(f"Event loop error: {e}")
                 time.sleep(self.event_backoff)
                 try:
                     self.docker_client = from_env()
                     events = self.docker_client.events(decode=True, filters=filters)
-                except DockerException as e2:
-                    logging.error(f"Reconnection failed: {e2}")
-            except Exception as e:  # broad catch to keep loop alive
-                logging.error(f"Unexpected error in event loop: {e}")
-                time.sleep(self.event_backoff)
+                except:
+                    pass
 
-    # ---------------- Lifecycle -----------------
     def start(self):
-        logging.info("Building initial firewall state (v2 nft backend)...")
+        logging.info("Starting MagicFirewall V2...")
         self.rebuild_state()
         self.nft.sync(self.state)
         self.event_loop()
@@ -479,10 +521,7 @@ class MagicFirewallV2:
     def stop(self, *_):
         self.running = False
         if self.clean_on_exit:
-            logging.info("Cleaning up nftables table (CLEAN_ON_EXIT=true)")
             self.nft.delete_table()
-        else:
-            logging.info("Leaving nftables table intact (CLEAN_ON_EXIT=false)")
         raise SystemExit(0)
 
 

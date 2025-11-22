@@ -10,12 +10,12 @@ Unlike v1, the new version requires to disable Docker's own iptables manipulatio
 { "iptables": false, "ip6tables": false }
 ```
 
-**Warning:** the v2.0 does not automatically enable SNAT (yet). If you need it, it's required to configure proper NAT rules on your side. Or you may configure static routes and SNAT on your gateway/router.
+**Note:** v2.0 automatically handles DNAT for published ports. SNAT (Masquerade) is **disabled by default** to preserve source IP visibility, but can be enabled via `ENABLE_MASQUERADE=true`.
 
 ### What it does
 * Disables / replaces Docker’s own iptables manipulation and enforces isolation rules itself.
 * Lets you selectively allow a container to initiate cross‑network traffic (ICC) or accept traffic from external hosts (optionally per-port) using labels.
-* Preserves published port behaviour (via docker-proxy in iptables=false mode) while still applying external filtering logic.
+* Preserves published port behaviour (via native nftables DNAT) while still applying external filtering logic.
 * Works for both IPv4 and IPv6 (dual-stack) using a single `nftables` table (`inet magicfw`).
 
 ### Key Features
@@ -23,6 +23,7 @@ Unlike v1, the new version requires to disable Docker's own iptables manipulatio
 * (v2) Initiator‑only inter‑container communication control: only containers with the ICC label can start new connections across different bridge networks; replies are allowed statefully.
 * (v2) External ingress control: either full open, or a comma‑separated allowlist of ports (with optional protocol) per container.
 * (v2) Automatic per‑port allowance for any published ports (`-p` / `ports:`) so existing deployments keep working.
+* (v2) **Secure HostIP Binding**: Respects the bind IP in published ports (e.g., `127.0.0.1:8080:80` is NOT exposed to the world).
 * (v2) Single consolidated nftables policy; atomic rebuild on Docker events.
 * Clean rule removal on shutdown (configurable).
 
@@ -33,7 +34,7 @@ Unlike v1, the new version requires to disable Docker's own iptables manipulatio
 | Docker daemon flags | required iptables=true | supports iptables=false (expected) |
 | allow_icc semantics | symmetric (both directions implicitly) | initiator only (source must have label; replies allowed) |
 | allow_external value | boolean only | boolean OR port list (e.g. `80,443,8443/udp`) |
-| Published ports | Accepted by explicit rules in DOCKER-USER | Auto-added as per-port external allowances (docker-proxy) |
+| Published ports | Accepted by explicit rules in DOCKER-USER | Native DNAT + Auto-added as per-port external allowances |
 | Rule scale | O(containers * subnets) | Mostly constant (sets/maps) |
 | Cleanup | Inline chain edits | Table deletion (optional) |
 | IPv4/IPv6 duplication | Separate chains | Unified via inet family |
@@ -55,7 +56,7 @@ Use labels to control per‑container policy:
   * Fully allowed if `allow_external` full-open.
   * Allowed only on listed ports if a port list is used.
   * Blocked otherwise (except for published ports which are implicitly allowed per-port).
-* Published ports: each published container port is inserted as a per-port external allowance automatically.
+* Published ports: each published container port is handled via native DNAT (respecting HostIP) and inserted as a per-port external allowance automatically.
 * Stateful: replies to permitted outbound connections always allowed (conntrack established/related).
 * Default bridge (docker0): currently NOT isolated unless you opt to add it to the enforcement set (future option). User-defined bridges (`br-<id>`) are enforced.
 
@@ -75,6 +76,7 @@ To install the script manually, the required dependencies are `python3` and the 
 | `CLEAN_ON_EXIT` | `true` | Delete the `inet magicfw` table on graceful shutdown. |
 | `DRY_RUN` | `false` | Log intended nftables spec without applying it. |
 | `EVENT_BACKOFF_SECS` | `2` | Backoff delay after transient Docker API errors. |
+| `ENABLE_MASQUERADE` | `false` | Enable masquerade (SNAT) for outbound traffic. |
 | (v1 only) `DISABLE_NAT` | `true` | v1: remove Docker SNAT rules (ignored in v2). |
 | (v1 only) `REMOVE_RAW_DROPS` | `true` | v1: remove Docker raw PREROUTING DROP rules (not needed in v2). |
 
@@ -126,8 +128,8 @@ services:
 ```
 
 In the above example:
-* `allow_icc` lets the container initiate to others across networks.
-* No `allow_external` label: only the published port (80) is reachable externally via host port 8080 (and directly to container IP:80 if routed). Other container ports remain closed.
+- `allow_icc` lets the container initiate to others across networks.
+- No `allow_external` label: only the published port (80) is reachable externally via host port 8080 (and directly to container IP:80 if routed). Other container ports remain closed.
 
 #### Example 4 (Selective external ports)
 ```yaml
@@ -162,7 +164,7 @@ Invalid tokens are ignored with a warning.
 
 ## Operational Notes
 * Default bridge (docker0) is currently not isolated by v2 (user-defined bridges are). Future versions may make this configurable.
-* Published ports rely on docker-proxy when iptables is disabled; v2 automatically whitelists those destination ports.
+* Published ports are handled via native nftables DNAT; you can disable `userland-proxy` in Docker.
 * To inspect the active table:
   ```bash
   sudo nft list table inet magicfw
