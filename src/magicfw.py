@@ -254,6 +254,9 @@ class NftManager:
         spec.append("    }\n")
 
         spec.append("    chain postrouting {\n        type nat hook postrouting priority 100; policy accept;\n")
+        # Hairpin NAT: Masquerade traffic from docker to docker IF it was DNATed (published port access)
+        spec.append("        meta nfproto ipv4 iifname @docker_ifaces oifname @docker_ifaces ct status dnat masquerade\n")
+
         if self.enable_masquerade:
             # Masquerade IPv4 (Standard Docker behavior)
             spec.append("        meta nfproto ipv4 iifname @docker_ifaces oifname != @docker_ifaces masquerade\n")
@@ -263,6 +266,7 @@ class NftManager:
         # --- FILTER CHAIN ---
         forward_rules: List[str] = [
             "ct state established,related accept",
+            "ct status dnat accept",
             # IPv4 Accepts
             "meta nfproto ipv4 iifname != @docker_ifaces oifname @docker_ifaces ip daddr @external_any_v4 accept",
             "meta nfproto ipv4 iifname != @docker_ifaces oifname @docker_ifaces ip daddr . tcp dport @external_tcp_v4 accept",
