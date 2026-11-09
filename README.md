@@ -56,6 +56,7 @@ Use labels to control per‑container policy:
   * Fully allowed if `allow_external` full-open.
   * Allowed only on listed ports if a port list is used.
   * Blocked otherwise (except for published ports which are implicitly allowed per-port).
+  * Traffic entering from an interface listed in `TRUSTED_IFACES` is always allowed, regardless of labels.
 * Published ports: each published container port is handled via native DNAT (respecting HostIP) and inserted as a per-port external allowance automatically.
 * Stateful: replies to permitted outbound connections always allowed (conntrack established/related).
 * Default bridge (docker0): currently NOT isolated unless you opt to add it to the enforcement set (future option). User-defined bridges (`br-<id>`) are enforced.
@@ -77,6 +78,7 @@ To install the script manually, the required dependencies are `python3` and the 
 | `DRY_RUN` | `false` | Log intended nftables spec without applying it. |
 | `EVENT_BACKOFF_SECS` | `2` | Backoff delay after transient Docker API errors. |
 | `ENABLE_MASQUERADE` | `false` | Enable masquerade (SNAT) for outbound traffic. |
+| `TRUSTED_IFACES` | _(empty)_ | Comma/space separated host interfaces (e.g. `tailscale0,wg0,zt*`) whose inbound traffic may reach **any** container on any port, even without `allow_external`. A trailing `*` matches by prefix. Useful for zero-trust VPNs (Tailscale, ZeroTier, WireGuard, Netbird...). |
 | (v1 only) `DISABLE_NAT` | `true` | v1: remove Docker SNAT rules (ignored in v2). |
 | (v1 only) `REMOVE_RAW_DROPS` | `true` | v1: remove Docker raw PREROUTING DROP rules (not needed in v2). |
 

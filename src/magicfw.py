@@ -83,6 +83,10 @@ Environment Variables:
   DRY_RUN            (default false) -> only log nft commands
   EVENT_BACKOFF_SECS (default 2) -> minimal sleep on certain transient errors
   ENABLE_MASQUERADE  (default false) -> enable masquerade for outbound traffic
+  TRUSTED_IFACES     (default empty) -> comma/space separated list of host
+                     interfaces (e.g. tailscale0, wg0, zt*) whose inbound
+                     traffic may reach any container regardless of the
+                     allow_external label. A trailing '*' is a wildcard.
 
 Future Extensions (not implemented yet):
   - Group-based ICC (label like magicfw.firewall.icc_group)
@@ -113,6 +117,24 @@ def env_bool(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
+IFACE_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,15}\*?$")
+
+
+def env_iface_list(name: str) -> List[str]:
+    """Parse a comma/space separated list of interface names (trailing '*' wildcard allowed)."""
+    out: List[str] = []
+    for token in re.split(r"[,\s]+", os.getenv(name, "")):
+        token = token.strip()
+        if not token:
+            continue
+        if not IFACE_RE.match(token):
+            logging.warning(f"{name}: ignoring invalid interface name {token!r}")
+            continue
+        if token not in out:
+            out.append(token)
+    return out
+
+
 @dataclass
 class ContainerNetInfo:
     container_id: str
@@ -137,9 +159,11 @@ class NftManager:
     TABLE_NAME = "magicfw"
     FAMILY = "inet"
 
-    def __init__(self, dry_run: bool = False, enable_masquerade: bool = False):
+    def __init__(self, dry_run: bool = False, enable_masquerade: bool = False,
+                 trusted_ifaces: List[str] | None = None):
         self.dry_run = dry_run
         self.enable_masquerade = enable_masquerade
+        self.trusted_ifaces = trusted_ifaces or []
 
     def run(self, cmd: List[str]):
         if self.dry_run:
@@ -267,6 +291,11 @@ class NftManager:
         forward_rules: List[str] = [
             "ct state established,related accept",
             "ct status dnat accept",
+        ]
+        # Trusted interfaces (e.g. zero-trust VPNs) may reach any container
+        for iface in self.trusted_ifaces:
+            forward_rules.append(f'iifname "{iface}" oifname @docker_ifaces accept')
+        forward_rules += [
             # IPv4 Accepts
             "meta nfproto ipv4 iifname != @docker_ifaces oifname @docker_ifaces ip daddr @external_any_v4 accept",
             "meta nfproto ipv4 iifname != @docker_ifaces oifname @docker_ifaces ip daddr . tcp dport @external_tcp_v4 accept",
@@ -349,7 +378,11 @@ class MagicFirewallV2:
         self.enable_masquerade = env_bool("ENABLE_MASQUERADE", False)
         self.event_backoff = float(os.getenv("EVENT_BACKOFF_SECS", "2"))
         self.state = GlobalState()
-        self.nft = NftManager(dry_run=self.dry_run, enable_masquerade=self.enable_masquerade)
+        self.trusted_ifaces = env_iface_list("TRUSTED_IFACES")
+        if self.trusted_ifaces:
+            logging.info(f"Trusted interfaces: {', '.join(self.trusted_ifaces)}")
+        self.nft = NftManager(dry_run=self.dry_run, enable_masquerade=self.enable_masquerade,
+                              trusted_ifaces=self.trusted_ifaces)
         self.docker_client = from_env()
         self.running = True
 

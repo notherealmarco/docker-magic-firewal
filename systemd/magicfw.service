@@ -17,6 +17,8 @@ Environment=LOG_LEVEL=INFO
 Environment=ENABLE_IPV4=true
 Environment=ENABLE_IPV6=true
 Environment=DISABLE_NAT=true
+# Interfaces allowed to reach all containers (e.g. zero trust VPNs)
+#Environment=TRUSTED_IFACES=tailscale0,wg0
 
 # Security hardening
 User=root
